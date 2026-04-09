@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+ARG CLAUDE_CODE_NPM_SPEC=@anthropic-ai/claude-code
+
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -12,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     graphviz \
+    bash \
     nodejs \
     npm \
     && rm -rf /var/lib/apt/lists/*
@@ -21,6 +24,9 @@ WORKDIR /app
 RUN pip install --no-cache-dir \
     fastapi==0.118.2 \
     uvicorn==0.37.0
+
+RUN npm install -g "${CLAUDE_CODE_NPM_SPEC}" \
+    && claude --version
 
 COPY . /app
 

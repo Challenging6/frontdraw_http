@@ -109,6 +109,15 @@ docker build -t frontdraw-http:dev harbor/frontdraw_http
 docker run --rm -p 8000:8000 -v "$PWD/tmp/workspaces:/workspaces" frontdraw-http:dev
 ```
 
+当前 Dockerfile 已在构建阶段预装 `Claude Code`，用于无外网运行环境下的 Harbor agent 执行。
+如需锁定版本，可在 build 时传入：
+
+```bash
+docker build \
+  --build-arg CLAUDE_CODE_NPM_SPEC='@anthropic-ai/claude-code@<version>' \
+  -t frontdraw-http:dev harbor/frontdraw_http
+```
+
 如果你习惯从仓库根目录用 `-f` 指定 Dockerfile，这种方式也支持：
 
 ```bash

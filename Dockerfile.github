@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+ARG CLAUDE_CODE_NPM_SPEC=@anthropic-ai/claude-code
+
 ENV FRONTDRAW_GIT_REPO=https://github.com/Challenging6/frontdraw_http.git \
     FRONTDRAW_GIT_REF=main \
     FRONTDRAW_GIT_SOURCE_SUBDIR=. \
@@ -15,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     graphviz \
+    bash \
     nodejs \
     npm \
     && rm -rf /var/lib/apt/lists/*
@@ -24,6 +27,9 @@ WORKDIR /app
 RUN pip install --no-cache-dir \
     fastapi==0.118.2 \
     uvicorn==0.37.0
+
+RUN npm install -g "${CLAUDE_CODE_NPM_SPEC}" \
+    && claude --version
 
 RUN git clone --depth 1 --branch "${FRONTDRAW_GIT_REF}" "${FRONTDRAW_GIT_REPO}" /tmp/frontdraw-repo \
     && if [ "${FRONTDRAW_GIT_SOURCE_SUBDIR}" = "." ]; then src=/tmp/frontdraw-repo; else src="/tmp/frontdraw-repo/${FRONTDRAW_GIT_SOURCE_SUBDIR}"; fi \
