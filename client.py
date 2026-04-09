@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import tarfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from io import BytesIO
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from .models import (
@@ -88,8 +91,59 @@ class FrontdrawHttpClient:
     def delete_trial(self, trial_id: str) -> Mapping[str, Any]:
         return self._request_json("DELETE", f"/trials/{trial_id}")
 
+    def upload_file(self, trial_id: str, source_path: Path | str, target_path: str) -> Mapping[str, Any]:
+        source = Path(source_path)
+        encoded = urllib.parse.quote(target_path, safe="")
+        return self._request_json_bytes(
+            "POST",
+            f"/trials/{trial_id}/upload-file?target_path={encoded}",
+            source.read_bytes(),
+            content_type="application/octet-stream",
+        )
+
+    def upload_dir(self, trial_id: str, source_dir: Path | str, target_dir: str) -> Mapping[str, Any]:
+        source = Path(source_dir)
+        buffer = BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            for path in sorted(source.rglob("*")):
+                archive.add(path, arcname=path.relative_to(source))
+        encoded = urllib.parse.quote(target_dir, safe="")
+        return self._request_json_bytes(
+            "POST",
+            f"/trials/{trial_id}/upload-dir?target_dir={encoded}",
+            buffer.getvalue(),
+            content_type="application/gzip",
+        )
+
+    def download_env_file(self, trial_id: str, source_path: str) -> bytes:
+        encoded = urllib.parse.quote(source_path, safe="")
+        return self._request_bytes("GET", f"/trials/{trial_id}/download-file?source_path={encoded}")
+
+    def download_dir(self, trial_id: str, source_dir: str, target_dir: Path | str) -> Path:
+        target = Path(target_dir)
+        target.mkdir(parents=True, exist_ok=True)
+        encoded = urllib.parse.quote(source_dir, safe="")
+        payload = self._request_bytes("GET", f"/trials/{trial_id}/download-dir?source_dir={encoded}")
+        with tarfile.open(fileobj=BytesIO(payload), mode="r:gz") as archive:
+            archive.extractall(target)
+        return target
+
     def _request_json(self, method: str, path: str, payload: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
         raw = self._request(method=method, path=path, payload=payload)
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            raise FrontdrawHttpError(f"Non-JSON response from {method} {path}: {raw[:200]!r}") from exc
+
+    def _request_json_bytes(
+        self,
+        method: str,
+        path: str,
+        payload: bytes,
+        *,
+        content_type: str,
+    ) -> Mapping[str, Any]:
+        raw = self._request_bytes_with_payload(method=method, path=path, payload=payload, content_type=content_type)
         try:
             return json.loads(raw.decode("utf-8"))
         except json.JSONDecodeError as exc:
@@ -98,6 +152,16 @@ class FrontdrawHttpClient:
     def _request_bytes(self, method: str, path: str) -> bytes:
         return self._request(method=method, path=path, payload=None)
 
+    def _request_bytes_with_payload(
+        self,
+        method: str,
+        path: str,
+        payload: bytes,
+        *,
+        content_type: str,
+    ) -> bytes:
+        return self._request_raw(method=method, path=path, data=payload, content_type=content_type)
+
     def _request(self, method: str, path: str, payload: Mapping[str, Any] | None) -> bytes:
         data = None
         headers = {
@@ -105,17 +169,28 @@ class FrontdrawHttpClient:
         }
         if payload is not None:
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-            headers["Content-Type"] = "application/json"
+            return self._request_raw(method=method, path=path, data=data, content_type="application/json")
+        return self._request_raw(method=method, path=path, data=None, content_type=None)
+
+    def _request_raw(
+        self,
+        *,
+        method: str,
+        path: str,
+        data: bytes | None,
+        content_type: str | None,
+    ) -> bytes:
+        headers = {
+            "User-Agent": self.user_agent,
+        }
+        if content_type:
+            headers["Content-Type"] = content_type
         if self.bearer_token:
             headers["Authorization"] = f"Bearer {self.bearer_token}"
-        request = urllib.request.Request(
-            f"{self.base_url}{path}",
-            data=data,
-            headers=headers,
-            method=method,
-        )
+        request = urllib.request.Request(f"{self.base_url}{path}", data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_sec) as response:
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            with opener.open(request, timeout=self.timeout_sec) as response:
                 return response.read()
         except urllib.error.HTTPError as exc:
             body = exc.read()
@@ -123,4 +198,3 @@ class FrontdrawHttpClient:
             raise FrontdrawHttpError(f"{method} {path} failed with HTTP {exc.code}: {message}") from exc
         except urllib.error.URLError as exc:
             raise FrontdrawHttpError(f"{method} {path} failed: {exc}") from exc
-

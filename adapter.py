@@ -122,12 +122,16 @@ def build_verifier_exec_request(
     timeout_sec: int = 900,
     extra_env: Mapping[str, str] | None = None,
 ) -> ExecRequest:
+    verifier_env = {
+        "FRONTDRAW_VERIFIER_LOG_DIR": f"{workspace_root}/logs/verifier",
+    }
+    if extra_env:
+        verifier_env.update(extra_env)
     return build_exec_request(
         cmd="bash tests/test.sh",
         workspace_root=workspace_root,
         home_profile=home_profile,
         bundle_profile=bundle_profile,
         timeout_sec=timeout_sec,
-        extra_env=extra_env,
+        extra_env=verifier_env,
     )
-

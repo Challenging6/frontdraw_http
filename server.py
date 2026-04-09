@@ -14,8 +14,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Tuple
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, Response
 
 
 WORKSPACE_ROOT = Path(os.environ.get("FRONTDRAW_WORKSPACE_ROOT", "/workspaces")).resolve()
@@ -28,6 +28,7 @@ app.state.trials = {}
 
 def _ensure_workspace_root() -> None:
     WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
+    _trial_registry_dir().mkdir(parents=True, exist_ok=True)
 
 
 def _workspace_path(trial_hash: str) -> Path:
@@ -38,9 +39,31 @@ def _trial_meta_path(workspace_root: Path) -> Path:
     return workspace_root / ".trial_meta.json"
 
 
+def _trial_registry_dir() -> Path:
+    return WORKSPACE_ROOT / ".trials"
+
+
+def _trial_registry_path(trial_id: str) -> Path:
+    return _trial_registry_dir() / f"{trial_id}.json"
+
+
+def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp_path.replace(path)
+
+
 def _write_trial_meta(meta: Mapping[str, Any]) -> None:
     workspace_root = Path(meta["workspace_root"])
-    _trial_meta_path(workspace_root).write_text(json.dumps(meta, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    _atomic_write_json(_trial_meta_path(workspace_root), meta)
+    _atomic_write_json(_trial_registry_path(str(meta["trial_id"])), meta)
+
+
+def _delete_trial_meta(trial_id: str, workspace_root: Path) -> None:
+    for path in [_trial_registry_path(trial_id), _trial_meta_path(workspace_root)]:
+        if path.exists():
+            path.unlink()
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -74,6 +97,14 @@ def _safe_extract_tar_bytes(blob: bytes, target_dir: Path) -> List[str]:
         for member in archive.getmembers():
             written.append(str((target_dir / member.name).relative_to(target_dir)))
     return written
+
+
+def _pack_dir_to_tgz_bytes(source_dir: Path) -> bytes:
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for path in sorted(source_dir.rglob("*")):
+            archive.add(path, arcname=path.relative_to(source_dir))
+    return buffer.getvalue()
 
 
 def _download_bytes(url: str) -> bytes:
@@ -110,14 +141,31 @@ def _copy_or_extract_ref(ref: str, target_path: Path) -> List[str]:
 
 def _load_trial(trial_id: str) -> Dict[str, Any]:
     meta = app.state.trials.get(trial_id)
-    if meta is None:
-        raise HTTPException(status_code=404, detail=f"Unknown trial_id: {trial_id}")
-    return meta
+    if meta is not None:
+        return meta
+    registry_path = _trial_registry_path(trial_id)
+    if registry_path.exists():
+        meta = json.loads(registry_path.read_text(encoding="utf-8"))
+        app.state.trials[trial_id] = meta
+        return meta
+    raise HTTPException(status_code=404, detail=f"Unknown trial_id: {trial_id}")
 
 
 def _ensure_support_dirs(workspace_root: Path, agent_home_profiles: Iterable[str] | None = None) -> List[str]:
     written: List[str] = []
-    for rel in ["logs", "submission", "skills", "assets", "task", "agent-home"]:
+    for rel in [
+        "logs",
+        "logs/agent",
+        "logs/verifier",
+        "logs/artifacts",
+        "submission",
+        "skills",
+        "assets",
+        "task",
+        "tests",
+        "solution",
+        "agent-home",
+    ]:
         path = workspace_root / rel
         path.mkdir(parents=True, exist_ok=True)
         written.append(rel)
@@ -142,9 +190,65 @@ def _persist_exec_logs(workspace_root: Path, stdout: str, stderr: str) -> Tuple[
     )
 
 
+def _load_runtime_profiles(workspace_root: Path) -> List[str]:
+    runtime_path = workspace_root / "environment" / "runtime.json"
+    if not runtime_path.exists():
+        return []
+    try:
+        payload = json.loads(runtime_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    agent = payload.get("agent", {})
+    home_profile = agent.get("home_profile")
+    if not home_profile:
+        return []
+    return [str(home_profile)]
+
+
+def _prepare_exec_workspace(workspace_root: Path, env: Mapping[str, str]) -> None:
+    profiles = list(_load_runtime_profiles(workspace_root))
+    for env_key in ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "GEMINI_CONFIG_DIR"]:
+        value = env.get(env_key)
+        if value:
+            path = _safe_resolve_under(workspace_root, value)
+            (path / "skills").mkdir(parents=True, exist_ok=True)
+            if path.name not in profiles:
+                profiles.append(path.name)
+    _ensure_support_dirs(workspace_root, profiles)
+
+
+def _ensure_parent_dir(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _terminate_process_group(process: subprocess.Popen[str], grace_period_sec: float = 2.0) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.time() + grace_period_sec
+    while time.time() < deadline:
+        if process.poll() is not None:
+            return
+        time.sleep(0.05)
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+
+
 @app.on_event("startup")
 def _startup() -> None:
     _ensure_workspace_root()
+
+
+@app.get("/healthz")
+def healthz() -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "sandbox_id": SANDBOX_ID,
+        "workspace_root": str(WORKSPACE_ROOT),
+    }
 
 
 @app.post("/trials")
@@ -218,6 +322,11 @@ def prepare_trial(trial_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         written_paths.extend(_ensure_support_dirs(workspace_root, payload.get("agent_home_profiles", [])))
 
     meta["status"] = "prepared"
+    meta["last_prepare"] = {
+        "mode": str(payload.get("upload_mode", "refs")),
+        "written_paths_count": len(sorted(set(written_paths))),
+        "prepared_at": int(time.time()),
+    }
     _write_trial_meta(meta)
     return {
         "trial_id": trial_id,
@@ -236,10 +345,19 @@ def exec_trial(trial_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="cmd is required")
     cwd = payload.get("cwd", str(workspace_root))
     cwd_path = _safe_resolve_under(workspace_root, str(cwd))
+    cwd_path.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     for key, value in payload.get("env", {}).items():
         env[str(key)] = str(value)
+    _prepare_exec_workspace(workspace_root, env)
     timeout_sec = int(payload.get("timeout_sec", 600))
+    meta["status"] = "running"
+    meta["running_exec"] = {
+        "cmd": str(cmd),
+        "cwd": str(cwd_path),
+        "started_at": int(time.time()),
+    }
+    _write_trial_meta(meta)
 
     started = time.time()
     process = subprocess.Popen(
@@ -257,11 +375,13 @@ def exec_trial(trial_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         stdout, stderr = process.communicate(timeout=timeout_sec)
     except subprocess.TimeoutExpired:
         timed_out = True
-        os.killpg(process.pid, signal.SIGKILL)
+        _terminate_process_group(process)
         stdout, stderr = process.communicate()
 
     duration_ms = int((time.time() - started) * 1000)
     stdout_log, stderr_log = _persist_exec_logs(workspace_root, stdout, stderr)
+    meta.pop("running_exec", None)
+    meta["status"] = "prepared"
     meta["last_exec"] = {
         "cmd": str(cmd),
         "cwd": str(cwd_path),
@@ -270,6 +390,7 @@ def exec_trial(trial_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         "stdout_log": stdout_log,
         "stderr_log": stderr_log,
         "exit_code": process.returncode,
+        "finished_at": int(time.time()),
     }
     _write_trial_meta(meta)
     return {
@@ -280,6 +401,68 @@ def exec_trial(trial_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         "stderr": stderr,
         "timed_out": timed_out,
     }
+
+
+@app.post("/trials/{trial_id}/upload-file")
+async def upload_file(trial_id: str, request: Request, target_path: str = Query(...)) -> Dict[str, Any]:
+    meta = _load_trial(trial_id)
+    workspace_root = Path(meta["workspace_root"])
+    resolved_target = _safe_resolve_under(workspace_root, target_path)
+    _ensure_parent_dir(resolved_target)
+    payload = await request.body()
+    resolved_target.write_bytes(payload)
+    return {
+        "trial_id": trial_id,
+        "uploaded": True,
+        "target_path": str(resolved_target.relative_to(workspace_root)),
+        "size_bytes": len(payload),
+    }
+
+
+@app.post("/trials/{trial_id}/upload-dir")
+async def upload_dir(trial_id: str, request: Request, target_dir: str = Query(...)) -> Dict[str, Any]:
+    meta = _load_trial(trial_id)
+    workspace_root = Path(meta["workspace_root"])
+    resolved_target = _safe_resolve_under(workspace_root, target_dir)
+    if resolved_target.exists():
+        shutil.rmtree(resolved_target)
+    payload = await request.body()
+    written_paths = _safe_extract_tar_bytes(payload, resolved_target)
+    return {
+        "trial_id": trial_id,
+        "uploaded": True,
+        "target_dir": str(resolved_target.relative_to(workspace_root)),
+        "written_paths": written_paths,
+        "written_paths_count": len(written_paths),
+    }
+
+
+@app.get("/trials/{trial_id}/download-file")
+def download_file(trial_id: str, source_path: str = Query(...)) -> FileResponse:
+    meta = _load_trial(trial_id)
+    workspace_root = Path(meta["workspace_root"])
+    path = _safe_resolve_under(workspace_root, source_path)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail=f"File not found: {source_path}")
+    return FileResponse(path)
+
+
+@app.get("/trials/{trial_id}/download-dir")
+def download_dir(trial_id: str, source_dir: str = Query(...)) -> Response:
+    meta = _load_trial(trial_id)
+    workspace_root = Path(meta["workspace_root"])
+    path = _safe_resolve_under(workspace_root, source_dir)
+    if not path.exists() or not path.is_dir():
+        raise HTTPException(status_code=404, detail=f"Directory not found: {source_dir}")
+    payload = _pack_dir_to_tgz_bytes(path)
+    filename = f"{path.name or 'root'}.tar.gz"
+    return Response(
+        content=payload,
+        media_type="application/gzip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
+    )
 
 
 @app.get("/trials/{trial_id}/artifacts")
@@ -325,6 +508,7 @@ def delete_trial(trial_id: str) -> Dict[str, Any]:
     if workspace_root.exists():
         shutil.rmtree(workspace_root)
     app.state.trials.pop(trial_id, None)
+    _delete_trial_meta(trial_id, workspace_root)
     return {
         "trial_id": trial_id,
         "deleted": True,

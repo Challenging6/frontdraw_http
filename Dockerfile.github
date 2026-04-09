@@ -1,9 +1,9 @@
 FROM python:3.11-slim
 
-ARG GIT_REPO=https://github.com/OWNER/REPO.git
-ARG GIT_REF=main
-
-ENV DEBIAN_FRONTEND=noninteractive \
+ENV FRONTDRAW_GIT_REPO=https://github.com/Challenging6/frontdraw_http.git \
+    FRONTDRAW_GIT_REF=main \
+    FRONTDRAW_GIT_SOURCE_SUBDIR=. \
+    DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     FRONTDRAW_WORKSPACE_ROOT=/workspaces \
@@ -25,8 +25,10 @@ RUN pip install --no-cache-dir \
     fastapi==0.118.2 \
     uvicorn==0.37.0
 
-RUN git clone --depth 1 --branch "${GIT_REF}" "${GIT_REPO}" /tmp/frontdraw-repo \
-    && cp -R /tmp/frontdraw-repo/harbor/frontdraw_http/. /app/ \
+RUN git clone --depth 1 --branch "${FRONTDRAW_GIT_REF}" "${FRONTDRAW_GIT_REPO}" /tmp/frontdraw-repo \
+    && if [ "${FRONTDRAW_GIT_SOURCE_SUBDIR}" = "." ]; then src=/tmp/frontdraw-repo; else src="/tmp/frontdraw-repo/${FRONTDRAW_GIT_SOURCE_SUBDIR}"; fi \
+    && test -f "${src}/server.py" \
+    && cp -R "${src}/." /app/ \
     && rm -rf /tmp/frontdraw-repo
 
 RUN mkdir -p /workspaces

@@ -19,10 +19,12 @@ from .models import ArtifactsResponse, ExecResponse, PrepareResponse, TrialCreat
 @dataclass(frozen=True)
 class RuntimeConfig:
     metadata: Mapping[str, Any]
+    task: Mapping[str, Any]
     environment: Mapping[str, Any]
     agent: Mapping[str, Any]
     verifier: Mapping[str, Any]
     skills: Mapping[str, Any]
+    frontdraw_http: Mapping[str, Any]
     render: Mapping[str, Any]
 
 
@@ -55,10 +57,12 @@ def load_runtime_config(task_dir: str | Path) -> RuntimeConfig:
     payload = json.loads(path.read_text(encoding="utf-8"))
     return RuntimeConfig(
         metadata=payload.get("metadata", {}),
+        task=payload.get("task", {}),
         environment=payload.get("environment", {}),
         agent=payload.get("agent", {}),
         verifier=payload.get("verifier", {}),
         skills=payload.get("skills", {}),
+        frontdraw_http=payload.get("frontdraw_http", {}),
         render=payload.get("render", {}),
     )
 
@@ -79,7 +83,7 @@ class FrontdrawHttpEnvironment:
         request = build_trial_create_request(
             task_dir=task_dir,
             run_id=run_id,
-            image=image or str(runtime.environment.get("image", "frontdrawskill-bench:base")),
+            image=image or str(runtime.environment.get("docker_image", "frontdrawskill-bench:base")),
             timeout_sec=timeout_sec or int(runtime.agent.get("timeout_sec", 1800)),
         )
         response = self.client.create_trial(request)
@@ -147,4 +151,3 @@ class FrontdrawHttpEnvironment:
 
     def package_task_dir(self, handle: TrialHandle, output_path: str | Path) -> Path:
         return package_task_dir(handle.task_dir, output_path)
-

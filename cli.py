@@ -13,6 +13,8 @@ from .adapter import (
 )
 from .client import FrontdrawHttpClient
 from .environment import FrontdrawHttpEnvironment, load_runtime_config
+from .harbor_adapter import FrontdrawHarborAdapter, HarborAdapterConfig
+from .inprocess_client import InprocessFrontdrawHttpClient
 
 
 def parse_args() -> argparse.Namespace:
@@ -62,6 +64,33 @@ def parse_args() -> argparse.Namespace:
     lifecycle_parser.add_argument("--keep-trial", action="store_true", help="Do not delete the trial after execution")
     lifecycle_parser.add_argument("--download-artifacts-dir", help="Optional local directory to download all listed artifacts into")
 
+    adapter_run_parser = subparsers.add_parser("run-adapter", help="Run one task instance through the Harbor-style adapter")
+    adapter_run_parser.add_argument("--base-url", required=True)
+    adapter_run_parser.add_argument("--task-dir", required=True)
+    adapter_run_parser.add_argument("--run-id", required=True)
+    adapter_run_parser.add_argument("--agent-cmd", required=True)
+    adapter_run_parser.add_argument("--work-dir", required=True, help="Local directory used to download artifacts")
+    adapter_run_parser.add_argument("--tarball-url", help="Optional remote tarball URL. If omitted, package locally and use file://")
+    adapter_run_parser.add_argument("--image")
+    adapter_run_parser.add_argument("--api-key")
+    adapter_run_parser.add_argument("--request-timeout-sec", type=int, default=30)
+    adapter_run_parser.add_argument("--agent-timeout-sec", type=int)
+    adapter_run_parser.add_argument("--verifier-timeout-sec", type=int)
+    adapter_run_parser.add_argument("--skip-verifier", action="store_true")
+    adapter_run_parser.add_argument("--keep-trial", action="store_true")
+
+    inprocess_parser = subparsers.add_parser("run-adapter-inprocess", help="Run one task instance through the adapter against the in-process FastAPI app")
+    inprocess_parser.add_argument("--task-dir", required=True)
+    inprocess_parser.add_argument("--run-id", required=True)
+    inprocess_parser.add_argument("--agent-cmd", required=True)
+    inprocess_parser.add_argument("--work-dir", required=True)
+    inprocess_parser.add_argument("--workspace-root", required=True)
+    inprocess_parser.add_argument("--image")
+    inprocess_parser.add_argument("--agent-timeout-sec", type=int)
+    inprocess_parser.add_argument("--verifier-timeout-sec", type=int)
+    inprocess_parser.add_argument("--skip-verifier", action="store_true")
+    inprocess_parser.add_argument("--keep-trial", action="store_true")
+
     return parser.parse_args()
 
 
@@ -93,10 +122,12 @@ def main() -> None:
             json.dumps(
                 {
                     "metadata": dict(runtime.metadata),
+                    "task": dict(runtime.task),
                     "environment": dict(runtime.environment),
                     "agent": dict(runtime.agent),
                     "verifier": dict(runtime.verifier),
                     "skills": dict(runtime.skills),
+                    "frontdraw_http": dict(runtime.frontdraw_http),
                     "render": dict(runtime.render),
                 },
                 ensure_ascii=False,
@@ -169,6 +200,79 @@ def main() -> None:
                 cleanup = environment.cleanup(handle)
                 lifecycle["cleanup"] = dict(cleanup)
         print(json.dumps(lifecycle, ensure_ascii=False, indent=2))
+        return
+
+    if args.command == "run-adapter":
+        config = HarborAdapterConfig(
+            base_url=args.base_url,
+            api_key=args.api_key,
+            request_timeout_sec=args.request_timeout_sec,
+            image_override=args.image,
+        )
+        adapter = FrontdrawHarborAdapter.from_config(config)
+        result = adapter.run_once(
+            task_dir=args.task_dir,
+            run_id=args.run_id,
+            agent_cmd=args.agent_cmd,
+            work_dir=args.work_dir,
+            tarball_url=args.tarball_url,
+            image=args.image,
+            agent_timeout_sec=args.agent_timeout_sec,
+            verifier_timeout_sec=args.verifier_timeout_sec,
+            run_verifier=not args.skip_verifier,
+            keep_trial=args.keep_trial,
+        )
+        print(
+            json.dumps(
+                {
+                    "create": dict(result.create),
+                    "prepare": dict(result.prepare),
+                    "agent_exec": dict(result.agent_exec) if result.agent_exec is not None else None,
+                    "verifier_exec": dict(result.verifier_exec) if result.verifier_exec is not None else None,
+                    "artifacts": dict(result.artifacts),
+                    "downloaded_artifacts": dict(result.downloaded_artifacts),
+                    "cleanup": dict(result.cleanup) if result.cleanup is not None else None,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return
+
+    if args.command == "run-adapter-inprocess":
+        import harbor.frontdraw_http.server as server_mod
+
+        server_mod.WORKSPACE_ROOT = Path(args.workspace_root).resolve()
+        server_mod._ensure_workspace_root()
+        server_mod.app.state.trials = {}
+        client = InprocessFrontdrawHttpClient(server_mod.app)
+        adapter = FrontdrawHarborAdapter(FrontdrawHttpEnvironment(client))
+        result = adapter.run_once(
+            task_dir=args.task_dir,
+            run_id=args.run_id,
+            agent_cmd=args.agent_cmd,
+            work_dir=args.work_dir,
+            image=args.image,
+            agent_timeout_sec=args.agent_timeout_sec,
+            verifier_timeout_sec=args.verifier_timeout_sec,
+            run_verifier=not args.skip_verifier,
+            keep_trial=args.keep_trial,
+        )
+        print(
+            json.dumps(
+                {
+                    "create": dict(result.create),
+                    "prepare": dict(result.prepare),
+                    "agent_exec": dict(result.agent_exec) if result.agent_exec is not None else None,
+                    "verifier_exec": dict(result.verifier_exec) if result.verifier_exec is not None else None,
+                    "artifacts": dict(result.artifacts),
+                    "downloaded_artifacts": dict(result.downloaded_artifacts),
+                    "cleanup": dict(result.cleanup) if result.cleanup is not None else None,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return
 
     raise ValueError(f"Unknown command: {args.command}")

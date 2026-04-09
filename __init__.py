@@ -11,11 +11,16 @@ from .adapter import (
 )
 from .client import FrontdrawHttpClient, FrontdrawHttpError
 from .environment import FrontdrawHttpEnvironment, TrialHandle, load_runtime_config
+from .harbor_adapter import FrontdrawHarborAdapter, HarborRunContext
+from .inprocess_client import InprocessFrontdrawHttpClient
 
 __all__ = [
     "FrontdrawHttpClient",
     "FrontdrawHttpError",
     "FrontdrawHttpEnvironment",
+    "FrontdrawHarborAdapter",
+    "HarborRunContext",
+    "InprocessFrontdrawHttpClient",
     "TrialHandle",
     "build_exec_request",
     "build_prepare_tarball_request",
