@@ -29,7 +29,9 @@ app.state.trials = {}
 
 def _ensure_workspace_root() -> None:
     WORKSPACE_ROOT.mkdir(parents=True, exist_ok=True)
+    WORKSPACE_ROOT.chmod(0o777)
     _trial_registry_dir().mkdir(parents=True, exist_ok=True)
+    _trial_registry_dir().chmod(0o777)
 
 
 def _workspace_path(trial_hash: str) -> Path:
@@ -201,6 +203,19 @@ def _persist_exec_logs(workspace_root: Path, stdout: str, stderr: str) -> Tuple[
     )
 
 
+def _best_effort_chown(path: Path, user: str) -> None:
+    try:
+        shutil.chown(path, user=user, group=user)
+    except Exception:
+        return
+
+
+def _best_effort_chown_tree(root: Path, user: str) -> None:
+    _best_effort_chown(root, user)
+    for path in root.rglob("*"):
+        _best_effort_chown(path, user)
+
+
 def _load_runtime_profiles(workspace_root: Path) -> List[str]:
     runtime_path = workspace_root / "environment" / "runtime.json"
     if not runtime_path.exists():
@@ -290,6 +305,7 @@ def create_trial(payload: Dict[str, Any]) -> Dict[str, Any]:
         "created_at": int(time.time()),
     }
     app.state.trials[trial_id] = meta
+    _best_effort_chown(workspace_root, "sandbox")
     _write_trial_meta(meta)
     return {
         "trial_id": trial_id,
@@ -332,6 +348,8 @@ def prepare_trial(trial_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         if skills_ref:
             written_paths.extend(_copy_or_extract_ref(str(skills_ref), workspace_root / "skills"))
         written_paths.extend(_ensure_support_dirs(workspace_root, payload.get("agent_home_profiles", [])))
+
+    _best_effort_chown_tree(workspace_root, "sandbox")
 
     meta["status"] = "prepared"
     meta["last_prepare"] = {
