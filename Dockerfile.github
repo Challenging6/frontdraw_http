@@ -28,6 +28,8 @@ RUN pip install --no-cache-dir \
     fastapi==0.118.2 \
     uvicorn==0.37.0
 
+RUN useradd -m -u 1000 -s /bin/bash sandbox
+
 RUN npm install -g "${CLAUDE_CODE_NPM_SPEC}" \
     && claude --version
 

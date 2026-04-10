@@ -4,6 +4,7 @@ import io
 import json
 import os
 import secrets
+import shlex
 import shutil
 import signal
 import subprocess
@@ -153,6 +154,8 @@ def _load_trial(trial_id: str) -> Dict[str, Any]:
 
 def _ensure_support_dirs(workspace_root: Path, agent_home_profiles: Iterable[str] | None = None) -> List[str]:
     written: List[str] = []
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    workspace_root.chmod(0o777)
     for rel in [
         "logs",
         "logs/agent",
@@ -168,12 +171,20 @@ def _ensure_support_dirs(workspace_root: Path, agent_home_profiles: Iterable[str
     ]:
         path = workspace_root / rel
         path.mkdir(parents=True, exist_ok=True)
+        path.chmod(0o777)
         written.append(rel)
     for profile in agent_home_profiles or []:
         profile_path = workspace_root / "agent-home" / profile / "skills"
         profile_path.mkdir(parents=True, exist_ok=True)
+        profile_path.chmod(0o777)
         written.append(str(profile_path.relative_to(workspace_root)))
     return written
+
+
+def _wrap_command_for_user(command: str, user: str | None) -> str:
+    if not user or user in {"root", "0"}:
+        return command
+    return f"su -s /bin/sh -c {shlex.quote(command)} {shlex.quote(user)}"
 
 
 def _persist_exec_logs(workspace_root: Path, stdout: str, stderr: str) -> Tuple[str, str]:
@@ -262,6 +273,7 @@ def create_trial(payload: Dict[str, Any]) -> Dict[str, Any]:
     if workspace_root.exists():
         raise HTTPException(status_code=409, detail=f"Workspace already exists for trial_hash={trial_hash}")
     workspace_root.mkdir(parents=True, exist_ok=False)
+    workspace_root.chmod(0o777)
     trial_id = f"trial_{secrets.token_hex(6)}"
     meta = {
         "trial_id": trial_id,
@@ -343,6 +355,7 @@ def exec_trial(trial_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     cmd = payload.get("cmd")
     if not cmd:
         raise HTTPException(status_code=400, detail="cmd is required")
+    requested_user = payload.get("user")
     cwd = payload.get("cwd", str(workspace_root))
     cwd_path = _safe_resolve_under(workspace_root, str(cwd))
     cwd_path.mkdir(parents=True, exist_ok=True)
@@ -361,7 +374,7 @@ def exec_trial(trial_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
 
     started = time.time()
     process = subprocess.Popen(
-        str(cmd),
+        _wrap_command_for_user(str(cmd), str(requested_user) if requested_user is not None else None),
         shell=True,
         cwd=str(cwd_path),
         env=env,
