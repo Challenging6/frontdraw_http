@@ -231,13 +231,18 @@ def _load_runtime_profiles(workspace_root: Path) -> List[str]:
     return [str(home_profile)]
 
 
-def _prepare_exec_workspace(workspace_root: Path, env: Mapping[str, str]) -> None:
+def _prepare_exec_workspace(
+    workspace_root: Path, env: Mapping[str, str], requested_user: str | None = None
+) -> None:
     profiles = list(_load_runtime_profiles(workspace_root))
     for env_key in ["CODEX_HOME", "CLAUDE_CONFIG_DIR", "GEMINI_CONFIG_DIR"]:
         value = env.get(env_key)
         if value:
             path = _safe_resolve_under(workspace_root, value)
             (path / "skills").mkdir(parents=True, exist_ok=True)
+            (path / "skills").chmod(0o777)
+            if requested_user and requested_user not in {"root", "0"}:
+                _best_effort_chown_tree(path, requested_user)
             if path.name not in profiles:
                 profiles.append(path.name)
     _ensure_support_dirs(workspace_root, profiles)
@@ -380,7 +385,11 @@ def exec_trial(trial_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     env = os.environ.copy()
     for key, value in payload.get("env", {}).items():
         env[str(key)] = str(value)
-    _prepare_exec_workspace(workspace_root, env)
+    _prepare_exec_workspace(
+        workspace_root,
+        env,
+        str(requested_user) if requested_user is not None else None,
+    )
     timeout_sec = int(payload.get("timeout_sec", 600))
     meta["status"] = "running"
     meta["running_exec"] = {
