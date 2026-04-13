@@ -109,7 +109,15 @@ docker build -t frontdraw-http:dev harbor/frontdraw_http
 docker run --rm -p 8000:8000 -v "$PWD/tmp/workspaces:/workspaces" frontdraw-http:dev
 ```
 
-当前 Dockerfile 已在构建阶段预装 `Claude Code`，用于无外网运行环境下的 Harbor agent 执行。
+当前两个 Dockerfile 都已在构建阶段预装：
+
+- `Claude Code`
+- `Playwright + Chromium`
+- `@mermaid-js/mermaid-cli`
+- `Graphviz / librsvg / poppler / Ghostscript / TikZ` 所需基础依赖
+
+用于无外网运行环境下的 Harbor agent 执行，以及 verifier 侧的浏览器截图和原生图形编译。
+
 如需锁定版本，可在 build 时传入：
 
 ```bash
@@ -136,6 +144,8 @@ docker build -f harbor/frontdraw_http/Dockerfile.github -t frontdraw-http:dev .
 - `https://github.com/Challenging6/frontdraw_http.git`
 - 分支：`main`
 - 代码目录：仓库根目录
+
+除代码来源不同外，`Dockerfile.github` 会尽量和本地版保持相同的运行时依赖，避免本地 build 和 GitHub 自拉版在 verifier 行为上分叉。
 
 如果你的平台只能直接粘贴 Dockerfile 内容，也可以直接把 `Dockerfile.github` 的内容贴进去，不需要额外传参。
 
