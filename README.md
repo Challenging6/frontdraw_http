@@ -118,6 +118,13 @@ docker run --rm -p 8000:8000 -v "$PWD/tmp/workspaces:/workspaces" frontdraw-http
 
 用于无外网运行环境下的 Harbor agent 执行，以及 verifier 侧的浏览器截图和原生图形编译。
 
+Playwright 这里采用的是：
+
+- 通过 `apt` 显式安装 Chromium 运行所需系统库和常用字体
+- 再执行 `python -m playwright install chromium`
+
+不使用 `--with-deps`，因为 `python:3.11-slim` 在 Debian trixie 上会触发 Playwright 的 Ubuntu fallback 依赖脚本，容易因为过时字体包名而构建失败。
+
 如需锁定版本，可在 build 时传入：
 
 ```bash
